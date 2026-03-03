@@ -348,11 +348,18 @@ func (opt *Optimizer) Step(ctx context.Context) error {
 		off := idx * dims
 		gOff := groupIdx * dims
 
+		// One random scale per attraction vector preserves the direction
+		// toward each best position. Per-dimension randomness would
+		// decorrelate dimensions and turn attraction into a random walk.
+		rpRand := rand.Float64()
+		rlRand := rand.Float64()
+		rgRand := rand.Float64()
+
 		for d := range dims {
 			ri := opt.positions[off+d]
-			rp := (opt.particleBestPosition[off+d] - ri) * rand.Float64()
-			rl := (opt.localBestPosition[gOff+d] - ri) * rand.Float64()
-			rg := (opt.globalBestPosition[d] - ri) * rand.Float64()
+			rp := (opt.particleBestPosition[off+d] - ri) * rpRand
+			rl := (opt.localBestPosition[gOff+d] - ri) * rlRand
+			rg := (opt.globalBestPosition[d] - ri) * rgRand
 
 			nv := opt.velocities[off+d]*opt.options.Inertia +
 				rp*opt.options.ParticleStep +

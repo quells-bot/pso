@@ -6,6 +6,8 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/quells/pso/pkg/swarm"
@@ -56,18 +58,21 @@ func main() {
 		log.Fatalf("could not build swarm: %v", err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	start := time.Now()
-	numSteps, err := pso.StepUntil(context.Background(), 1e-6)
-	if err != nil {
-		log.Fatalf("optimization failed: %v", err)
-	}
+	numSteps, err := pso.StepUntil(ctx, 1e-6)
 	elapsed := time.Since(start)
-	nsPerStep := elapsed.Nanoseconds() / int64(numSteps)
-	perStep := time.Duration(nsPerStep)
-	fmt.Printf("%d steps @ %s per step\n", numSteps, perStep)
 
 	best := pso.Best()
+	fmt.Printf("%d steps @ %s per step\n", numSteps, elapsed/time.Duration(numSteps))
 	fmt.Println(best, golinski(best))
+
+	if err != nil {
+		fmt.Println("interrupted")
+		os.Exit(1)
+	}
 
 	knownBest := []float64{3.50, 0.7, 17, 7.3, 7.30, 3.35, 5.29}
 	fmt.Println(knownBest, golinski(knownBest))

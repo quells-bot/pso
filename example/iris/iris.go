@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/quells/pso/pkg/swarm"
@@ -34,12 +36,19 @@ func main() {
 		log.Fatalf("could not build swarm: %v", err)
 	}
 
-	if _, err := pso.StepUntil(context.Background(), 1e-6); err != nil {
-		log.Fatalf("optimization failed: %v", err)
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
-	fmt.Println(test(pso.Best()))
-	// fmt.Println(pso.Best())
+	_, err = pso.StepUntil(ctx, 1e-6)
+
+	best := pso.Best()
+	fmt.Println(best)
+	fmt.Println(test(best))
+
+	if err != nil {
+		fmt.Println("interrupted")
+		os.Exit(1)
+	}
 }
 
 func train(weights []float64) (score float64) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
@@ -56,7 +57,10 @@ func main() {
 	}
 
 	start := time.Now()
-	numSteps := pso.StepUntil(1e-6)
+	numSteps, err := pso.StepUntil(context.Background(), 1e-6)
+	if err != nil {
+		log.Fatalf("optimization failed: %v", err)
+	}
 	elapsed := time.Since(start)
 	nsPerStep := elapsed.Nanoseconds() / int64(numSteps)
 	perStep := time.Duration(nsPerStep)

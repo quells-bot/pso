@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
@@ -33,7 +34,9 @@ func main() {
 		log.Fatalf("could not build swarm: %v", err)
 	}
 
-	pso.StepUntil(1e-6)
+	if _, err := pso.StepUntil(context.Background(), 1e-6); err != nil {
+		log.Fatalf("optimization failed: %v", err)
+	}
 
 	fmt.Println(test(pso.Best()))
 	// fmt.Println(pso.Best())

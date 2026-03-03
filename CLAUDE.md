@@ -5,14 +5,14 @@
 This is a **Particle Swarm Optimization (PSO)** library written in Go. It provides a general-purpose optimizer that uses swarm intelligence to minimize objective functions, supporting bounds, constraints, and parallel fitness evaluation.
 
 - **Module**: `github.com/quells/pso`
-- **Go version**: 1.16+ (no external dependencies)
+- **Go version**: 1.24+ (depends on `golang.org/x/sync`)
 - **Default branch**: `main`
 
 ## Repository Structure
 
 ```
 pso/
-├── go.mod                        # Go module definition (no dependencies)
+├── go.mod                        # Go module definition
 ├── pkg/
 │   └── swarm/
 │       └── swarm.go              # Core PSO library (Optimizer, Range, Options, fitness types)
@@ -60,8 +60,8 @@ There are currently **no tests** in this repository (`*_test.go` files do not ex
 |---|---|
 | `New(fitness, shape, options)` | Create a new optimizer. Shape initializes particle positions (does not enforce bounds). |
 | `opt.Reset()` | Re-randomize all particle positions and velocities. |
-| `opt.Step()` | Execute one optimization step (evaluate fitness + update velocities/positions). |
-| `opt.StepUntil(progressRate)` | Run steps until convergence (progress below threshold with logarithmic patience). |
+| `opt.Step(ctx)` | Execute one optimization step. Returns error on context cancellation. |
+| `opt.StepUntil(ctx, progressRate)` | Run steps until convergence or context cancellation. Returns `(steps, error)`. |
 | `opt.Best()` | Return the best position found so far. |
 
 ### Default Hyperparameters
@@ -80,11 +80,11 @@ There are currently **no tests** in this repository (`*_test.go` files do not ex
 
 ## Code Conventions
 
-- **Pure Go, zero dependencies** — The library has no external dependencies. Keep it that way.
+- **Minimal dependencies** — The only external dependency is `golang.org/x/sync` (quasi-standard library).
 - **Minimization by default** — Fitness functions return lower-is-better values. Maximize by negating.
 - **Nil-safe methods** — Optimizer methods check for `nil` receiver and return gracefully.
 - **Named returns** — Used in several functions (e.g., `getParticleFitness`, `StepUntil`).
-- **Concurrency** — Fitness evaluation uses a worker pool pattern with `sync.WaitGroup` and channels.
+- **Concurrency** — Fitness evaluation uses `golang.org/x/sync/errgroup` with `SetLimit` for bounded parallelism, and `context.Context` for cancellation.
 - **No error wrapping** — Errors are simple `fmt.Errorf` sentinel values.
 - **Package-level variables** — Sentinel errors are declared as `var` at package scope.
 - **Examples are standalone `main` packages** — Each example directory is a separate executable.

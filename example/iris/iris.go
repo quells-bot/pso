@@ -51,12 +51,13 @@ func main() {
 	}
 }
 
-func train(weights []float64) (score float64) {
+func train(weights []float64) (float64, bool) {
+	var score float64
 	for _, flower := range trainingData {
 		predicted := feedForwardNN(weights, flower.values)[flower.label]
 		score -= predicted
 	}
-	return
+	return score, true
 }
 
 func test(weights []float64) (score float64) {

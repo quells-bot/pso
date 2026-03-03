@@ -17,7 +17,10 @@ var (
 
 // A Fitness function scores a candidate particle position.
 // Lower values have a better score. To maximize a function, return the negative of the value.
-type Fitness func([]float64) float64
+// The bool return indicates whether the result is valid. Return false to signal that the
+// position is infeasible (e.g. domain error, NaN). The optimizer treats this the same as a
+// constraint violation.
+type Fitness func([]float64) (float64, bool)
 
 // A Constraint sets hard limits on the range of values each parameter can take relative to other
 // parameters. Must return false if a particle position is invalid.
@@ -96,21 +99,26 @@ type Optimizer struct {
 	fitness Fitness
 	shape   []Range
 	options Options
+	dims    int
 
-	positions  [][]float64 // [populationSize]position
-	velocities [][]float64 // [populationSize]velocity
-	stallCount []uint
+	// Flat contiguous arrays indexed as [idx*dims + d].
+	positions  []float64 // [populationSize * dims]
+	velocities []float64 // [populationSize * dims]
+	stallCount []uint    // [populationSize]
 
-	particleBestPosition [][]float64 // [populationSize]position
-	particleBestFitness  []float64   // [populationSize]fitness
+	particleBestPosition []float64 // [populationSize * dims]
+	particleBestFitness  []float64 // [populationSize]
 
-	localBestPosition [][]float64 // [groupCount]position
-	localBestFitness  []float64   // [groupCount]fitness
+	localBestPosition []float64 // [groupCount * dims]
+	localBestFitness  []float64 // [groupCount]
 
-	globalBestPosition []float64 // position
+	globalBestPosition []float64 // [dims]
 	globalBestFitness  float64
 
 	averageFitness float64
+
+	// Pre-allocated buffer reused across steps.
+	results []particleFitness
 }
 
 func (opt *Optimizer) Best() []float64 {
@@ -134,6 +142,7 @@ func New(fitness Fitness, shape []Range, options Options) (opt *Optimizer, err e
 	opt = &Optimizer{
 		fitness: fitness,
 		shape:   shape,
+		dims:    len(shape),
 	}
 
 	if options.LocalSize == 0 {
@@ -179,43 +188,47 @@ func (opt *Optimizer) Reset() {
 		return
 	}
 
-	opt.positions = make([][]float64, opt.options.PopulationSize)
-	opt.velocities = make([][]float64, opt.options.PopulationSize)
-	opt.stallCount = make([]uint, opt.options.PopulationSize)
-	opt.particleBestPosition = make([][]float64, opt.options.PopulationSize)
-	opt.particleBestFitness = make([]float64, opt.options.PopulationSize)
-	for i := 0; i < int(opt.options.PopulationSize); i++ {
-		opt.positions[i] = make([]float64, len(opt.shape))
-		opt.velocities[i] = make([]float64, len(opt.shape))
-		opt.particleBestPosition[i] = make([]float64, len(opt.shape))
+	popSize := int(opt.options.PopulationSize)
+	dims := opt.dims
+
+	opt.positions = make([]float64, popSize*dims)
+	opt.velocities = make([]float64, popSize*dims)
+	opt.stallCount = make([]uint, popSize)
+	opt.particleBestPosition = make([]float64, popSize*dims)
+	opt.particleBestFitness = make([]float64, popSize)
+	for i := range popSize {
 		opt.particleBestFitness[i] = math.MaxFloat64
 	}
-	for j, r := range opt.shape {
-		for i := 0; i < int(opt.options.PopulationSize); i++ {
-			delta := r[1] - r[0]
-			opt.positions[i][j] = r[0] + delta*rand.Float64()
-			opt.velocities[i][j] = (2*rand.Float64() - 1) * delta
+
+	for d, r := range opt.shape {
+		delta := r[1] - r[0]
+		for i := range popSize {
+			off := i*dims + d
+			opt.positions[off] = r[0] + delta*rand.Float64()
+			opt.velocities[off] = (2*rand.Float64() - 1) * delta
 		}
 	}
 	copy(opt.particleBestPosition, opt.positions)
 
-	opt.localBestPosition = make([][]float64, opt.options.groupCount)
-	opt.localBestFitness = make([]float64, opt.options.groupCount)
-	for i := 0; i < opt.options.groupCount; i++ {
-		opt.localBestPosition[i] = make([]float64, len(opt.shape))
-		idx := i * int(opt.options.LocalSize)
-		copy(opt.localBestPosition[i], opt.positions[idx])
+	groupCount := opt.options.groupCount
+	opt.localBestPosition = make([]float64, groupCount*dims)
+	opt.localBestFitness = make([]float64, groupCount)
+	for i := range groupCount {
 		opt.localBestFitness[i] = math.MaxFloat64
+		copy(opt.localBestPosition[i*dims:(i+1)*dims], opt.positions[i*int(opt.options.LocalSize)*dims:(i*int(opt.options.LocalSize)+1)*dims])
 	}
 
-	opt.globalBestPosition = make([]float64, len(opt.shape))
-	copy(opt.globalBestPosition, opt.positions[0])
+	opt.globalBestPosition = make([]float64, dims)
+	copy(opt.globalBestPosition, opt.positions[:dims])
 	opt.globalBestFitness = math.MaxFloat64
+
+	opt.results = make([]particleFitness, popSize)
 }
 
 type particleFitness struct {
 	idx     int
-	fitness *float64
+	fitness float64
+	valid   bool
 }
 
 // calculate fitness of particle at idx
@@ -226,7 +239,7 @@ func (opt *Optimizer) getParticleFitness(idx int) (result particleFitness) {
 
 	result.idx = idx
 
-	position := opt.positions[idx]
+	position := opt.positions[idx*opt.dims : (idx+1)*opt.dims]
 	for i, bounds := range opt.options.Bounds {
 		if !bounds.Contains(position[i]) {
 			// position out of bounds
@@ -240,8 +253,12 @@ func (opt *Optimizer) getParticleFitness(idx int) (result particleFitness) {
 		}
 	}
 
-	fitness := opt.fitness(position)
-	result.fitness = &fitness
+	fitness, ok := opt.fitness(position)
+	if !ok {
+		return
+	}
+	result.fitness = fitness
+	result.valid = true
 	return
 }
 
@@ -255,7 +272,12 @@ func (opt *Optimizer) updateFitness(ctx context.Context) error {
 	}
 
 	popSize := int(opt.options.PopulationSize)
-	results := make([]particleFitness, popSize)
+	dims := opt.dims
+
+	// Zero the pre-allocated results buffer.
+	for i := range popSize {
+		opt.results[i] = particleFitness{}
+	}
 
 	var g errgroup.Group
 	g.SetLimit(int(opt.options.Parallelism))
@@ -265,7 +287,7 @@ func (opt *Optimizer) updateFitness(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			results[idx] = opt.getParticleFitness(idx)
+			opt.results[idx] = opt.getParticleFitness(idx)
 			return nil
 		})
 	}
@@ -276,29 +298,33 @@ func (opt *Optimizer) updateFitness(ctx context.Context) error {
 
 	// Process results sequentially
 	var avg, count float64
-	for _, result := range results {
-		if result.fitness == nil {
+	for _, result := range opt.results[:popSize] {
+		if !result.valid {
 			opt.stallCount[result.idx]++
 			continue
 		}
 
-		avg += *result.fitness
+		avg += result.fitness
 		count++
 
-		if *result.fitness < opt.particleBestFitness[result.idx] {
-			opt.particleBestFitness[result.idx] = *result.fitness
-			copy(opt.particleBestPosition[result.idx], opt.positions[result.idx])
+		if result.fitness < opt.particleBestFitness[result.idx] {
+			opt.particleBestFitness[result.idx] = result.fitness
+			pOff := result.idx * dims
+			copy(opt.particleBestPosition[pOff:pOff+dims], opt.positions[pOff:pOff+dims])
 		}
 
 		groupIdx := result.idx % opt.options.groupCount
-		if *result.fitness < opt.localBestFitness[groupIdx] {
-			opt.localBestFitness[groupIdx] = *result.fitness
-			copy(opt.localBestPosition[groupIdx], opt.positions[result.idx])
+		if result.fitness < opt.localBestFitness[groupIdx] {
+			opt.localBestFitness[groupIdx] = result.fitness
+			gOff := groupIdx * dims
+			pOff := result.idx * dims
+			copy(opt.localBestPosition[gOff:gOff+dims], opt.positions[pOff:pOff+dims])
 		}
 
-		if *result.fitness < opt.globalBestFitness {
-			opt.globalBestFitness = *result.fitness
-			copy(opt.globalBestPosition, opt.positions[result.idx])
+		if result.fitness < opt.globalBestFitness {
+			opt.globalBestFitness = result.fitness
+			pOff := result.idx * dims
+			copy(opt.globalBestPosition, opt.positions[pOff:pOff+dims])
 		}
 	}
 	if count > 0 {
@@ -313,59 +339,36 @@ func (opt *Optimizer) Step(ctx context.Context) error {
 		return err
 	}
 
-	for idx := 0; idx < int(opt.options.PopulationSize); idx++ {
+	popSize := int(opt.options.PopulationSize)
+	dims := opt.dims
+	nBounds := len(opt.options.Bounds)
+
+	for idx := range popSize {
 		groupIdx := idx % opt.options.groupCount
+		off := idx * dims
+		gOff := groupIdx * dims
 
-		ri := opt.positions[idx]
-		rp := scale(sub(opt.particleBestPosition[idx], ri), rand.Float64())
-		rl := scale(sub(opt.localBestPosition[groupIdx], ri), rand.Float64())
-		rg := scale(sub(opt.globalBestPosition, ri), rand.Float64())
-		vi := opt.velocities[idx]
+		for d := range dims {
+			ri := opt.positions[off+d]
+			rp := (opt.particleBestPosition[off+d] - ri) * rand.Float64()
+			rl := (opt.localBestPosition[gOff+d] - ri) * rand.Float64()
+			rg := (opt.globalBestPosition[d] - ri) * rand.Float64()
 
-		nv := sum(
-			scale(vi, opt.options.Inertia),
-			scale(rp, opt.options.ParticleStep),
-			scale(rl, opt.options.LocalStep),
-			scale(rg, opt.options.GlobalStep),
-		)
-		opt.velocities[idx] = nv
+			nv := opt.velocities[off+d]*opt.options.Inertia +
+				rp*opt.options.ParticleStep +
+				rl*opt.options.LocalStep +
+				rg*opt.options.GlobalStep
+			opt.velocities[off+d] = nv
 
-		np := sum(opt.positions[idx], nv)
-		for i, bounds := range opt.options.Bounds {
-			opt.positions[idx][i] = bounds.Clip(np[i])
+			np := ri + nv
+			if d < nBounds {
+				np = opt.options.Bounds[d].Clip(np)
+			}
+			opt.positions[off+d] = np
 		}
 	}
 
 	return nil
-}
-
-// element-wise vector summation, yields v0 + v1 + ... + vi
-func sum(vs ...[]float64) []float64 {
-	result := make([]float64, len(vs[0]))
-	for _, v := range vs {
-		for i, vi := range v {
-			result[i] += vi
-		}
-	}
-	return result
-}
-
-// element-wise vector subtraction, yields u - v
-func sub(u, v []float64) []float64 {
-	result := make([]float64, len(u))
-	for i, ui := range u {
-		result[i] = ui - v[i]
-	}
-	return result
-}
-
-// scale each element of a vector by a scalar
-func scale(v []float64, s float64) []float64 {
-	result := make([]float64, len(v))
-	for i, vi := range v {
-		result[i] = vi * s
-	}
-	return result
 }
 
 func (opt *Optimizer) StepUntil(ctx context.Context, progressRate float64) (steps int, err error) {

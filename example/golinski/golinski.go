@@ -67,7 +67,8 @@ func main() {
 
 	best := pso.Best()
 	fmt.Printf("%d steps @ %s per step\n", numSteps, elapsed/time.Duration(numSteps))
-	fmt.Println(best, golinski(best))
+	score, _ := golinski(best)
+	fmt.Println(best, score)
 
 	if err != nil {
 		fmt.Println("interrupted")
@@ -75,10 +76,11 @@ func main() {
 	}
 
 	knownBest := []float64{3.50, 0.7, 17, 7.3, 7.30, 3.35, 5.29}
-	fmt.Println(knownBest, golinski(knownBest))
+	knownScore, _ := golinski(knownBest)
+	fmt.Println(knownBest, knownScore)
 }
 
-func golinski(x []float64) float64 {
+func golinski(x []float64) (float64, bool) {
 	a := 0.7854 *
 		x[0] *
 		math.Pow(x[1], 2) *
@@ -92,5 +94,5 @@ func golinski(x []float64) float64 {
 
 	d := 0.7854 * (x[3]*math.Pow(x[5], 2) + x[4]*math.Pow(x[6], 2))
 
-	return a - b + c + d
+	return a - b + c + d, true
 }

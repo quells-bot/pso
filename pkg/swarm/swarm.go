@@ -1,12 +1,14 @@
 package swarm
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math"
 	"math/rand"
 	"runtime"
-	"sync"
+
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -243,45 +245,38 @@ func (opt *Optimizer) getParticleFitness(idx int) (result particleFitness) {
 	return
 }
 
-func (opt *Optimizer) updateFitness() {
+func (opt *Optimizer) updateFitness(ctx context.Context) error {
 	if opt == nil {
-		return
+		return nil
 	}
 
-	// Launch workers
-	var wg sync.WaitGroup
-	todoIdx := make(chan int, int(opt.options.Parallelism))
-	results := make(chan particleFitness, int(opt.options.Parallelism))
-	for i := 0; i < int(opt.options.Parallelism); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
-			for {
-				idx, ok := <-todoIdx
-				if !ok {
-					return
-				}
+	popSize := int(opt.options.PopulationSize)
+	results := make([]particleFitness, popSize)
 
-				results <- opt.getParticleFitness(idx)
+	var g errgroup.Group
+	g.SetLimit(int(opt.options.Parallelism))
+
+	for idx := range popSize {
+		g.Go(func() error {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-		}()
+			results[idx] = opt.getParticleFitness(idx)
+			return nil
+		})
 	}
 
-	// Feed workers
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	if err := g.Wait(); err != nil {
+		return err
+	}
 
-		for idx := 0; idx < int(opt.options.PopulationSize); idx++ {
-			todoIdx <- idx
-		}
-	}()
-
-	// Retrieve completed work
+	// Process results sequentially
 	var avg, count float64
-	for i := 0; i < int(opt.options.PopulationSize); i++ {
-		result := <-results
+	for _, result := range results {
 		if result.fitness == nil {
 			opt.stallCount[result.idx]++
 			continue
@@ -306,13 +301,17 @@ func (opt *Optimizer) updateFitness() {
 			copy(opt.globalBestPosition, opt.positions[result.idx])
 		}
 	}
-	opt.averageFitness = avg / count
-	close(todoIdx)
-	wg.Wait()
+	if count > 0 {
+		opt.averageFitness = avg / count
+	}
+
+	return nil
 }
 
-func (opt *Optimizer) Step() {
-	opt.updateFitness()
+func (opt *Optimizer) Step(ctx context.Context) error {
+	if err := opt.updateFitness(ctx); err != nil {
+		return err
+	}
 
 	for idx := 0; idx < int(opt.options.PopulationSize); idx++ {
 		groupIdx := idx % opt.options.groupCount
@@ -336,6 +335,8 @@ func (opt *Optimizer) Step() {
 			opt.positions[idx][i] = bounds.Clip(np[i])
 		}
 	}
+
+	return nil
 }
 
 // element-wise vector summation, yields v0 + v1 + ... + vi
@@ -367,12 +368,14 @@ func scale(v []float64, s float64) []float64 {
 	return result
 }
 
-func (opt *Optimizer) StepUntil(progressRate float64) (steps int) {
+func (opt *Optimizer) StepUntil(ctx context.Context, progressRate float64) (steps int, err error) {
 	if opt == nil {
 		return
 	}
 
-	opt.Step()
+	if err = opt.Step(ctx); err != nil {
+		return
+	}
 	steps = 1
 
 	minProgressRate := math.Abs(progressRate)
@@ -380,7 +383,13 @@ func (opt *Optimizer) StepUntil(progressRate float64) (steps int) {
 	stepsSinceImprovement := 0
 
 	for {
-		opt.Step()
+		if err = ctx.Err(); err != nil {
+			return
+		}
+
+		if err = opt.Step(ctx); err != nil {
+			return
+		}
 		steps++
 		if opt.options.Verbose {
 			log.Println(steps, opt.globalBestFitness, opt.averageFitness)
@@ -407,5 +416,5 @@ func (opt *Optimizer) StepUntil(progressRate float64) (steps int) {
 	if opt.options.Verbose {
 		log.Println(steps, opt.globalBestFitness)
 	}
-	return steps
+	return steps, nil
 }
